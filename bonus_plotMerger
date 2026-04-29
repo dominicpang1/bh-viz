@@ -1,0 +1,161 @@
+from pathlib import Path
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.colors import LogNorm
+from scipy.stats import binned_statistic_2d
+
+
+def go_to_this_dir(folder_name):
+    home = Path.home()
+    target_dir = str(home)+'/project/blackhole_spectroscopy/'+folder_name
+    os.chdir(target_dir)
+    return os.getcwd()
+
+def make_msquared_animation(folder_name, output_path="msquared_animation.mp4",
+                            bins=300, field_col=3, cmap="plasma", fps=10,
+                            vmin=None, vmax=None):
+   
+    path = Path(go_to_this_dir(folder_name))
+
+    # CHANGED: only read the actual text data files, not the mp4 output or any other files
+    files = sorted([f for f in path.iterdir() if f.is_file() and f.suffix == ".txt"])
+
+    if not files:
+        raise ValueError(f"No .txt files found in {path}")
+
+    def bin_file(file):
+        data = np.loadtxt(file)
+
+        x = data[:, 0]
+        y = data[:, 1]
+        m2 = data[:, field_col]
+
+        zoom = 1
+        mask = (x >= -zoom) & (x <= zoom) & (y >= -zoom) & (y <= zoom)
+        x = x[mask]
+        y = y[mask]
+        m2 = m2[mask]
+        # only positive for log
+        positive = m2 > 0
+
+        if not np.any(positive):
+            return None, None, None, None
+
+        sum_grid, xedges, yedges = np.histogram2d(x, y, bins=bins, weights=m2)
+        count_grid, _, _ = np.histogram2d(x, y, bins=[xedges, yedges])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean_grid = sum_grid / count_grid
+
+        # Mask empty bins and zero/negative bins so LogNorm can work cleanly.
+        mean_grid = np.ma.masked_invalid(mean_grid)
+        mean_grid = np.ma.masked_less_equal(mean_grid, 0)
+        
+        # grid, xedges, yedges, _ = binned_statistic_2d(
+        #     x, y, m2,
+        #     statistic="max",
+        #     bins=bins
+        # )
+        # grid = np.ma.masked_invalid(grid)
+        # grid = np.ma.masked_less_equal(grid, 0)
+        
+
+        return mean_grid, xedges, yedges, m2 #grid vs meangrid
+
+    initial_grid = None
+    initial_xedges = None
+    initial_yedges = None
+    initial_values = None
+
+    for file in files:
+        grid, xedges, yedges, raw_m2 = bin_file(file)
+        if grid is not None and np.any(grid > 0):
+            initial_grid = grid
+            initial_xedges = xedges
+            initial_yedges = yedges
+            initial_values = grid.compressed()  # only finite, unmasked values
+            break
+
+    if initial_grid is None:
+        raise ValueError("No positive msquared values found in any file, so LogNorm cannot be used.")
+
+    if vmin is None:
+        vmin = np.min(initial_values[initial_values > 0])
+    if vmax is None:
+        vmax = np.max(initial_values)
+
+    fig, ax = plt.subplots()
+
+    # CHANGED: use LogNorm so the colorbar is logarithmic instead of linear.
+    norm = LogNorm(vmin=vmin, vmax=vmax, clip=True)
+
+    im = ax.imshow(
+        initial_grid.T,
+        origin="lower",
+        extent=[initial_xedges[0], initial_xedges[-1], initial_yedges[0], initial_yedges[-1]],
+        aspect="auto",
+        cmap=cmap,
+        norm=norm,
+    )
+
+    fig.colorbar(im, ax=ax, label="Diagnostic $m^2$")
+
+    ax.set_xlabel("y")
+    ax.set_ylabel("z")
+    title = "Diagnostic $m^2$ in the YZ plane at time t = "+files[0].name.split('-')[-1].removeprefix('t').removesuffix('.txt')
+    ax.set_title(title)
+
+    def update(i):
+
+        file = files[i]
+        print(file.name)
+
+        grid, xedges, yedges, raw_m2 = bin_file(file)
+
+        if grid is None:
+            # If the whole frame is zero, show an empty masked image with the same shape.
+            grid = np.ma.masked_all(initial_grid.shape)
+            xedges = initial_xedges
+            yedges = initial_yedges
+
+        im.set_data(grid.T)
+
+        # Keep the same normalization for every frame so the color meaning stays consistent.
+        im.set_norm(norm)
+
+        # If the coordinate edges are the same for every file, these lines do nothing harmful.
+        im.set_extent([xedges[0], xedges[-1], yedges[0], yedges[-1]])
+        title = "Diagnostic $m^2$ in the YZ plane at time t = "+files[i].name.split('-')[-1].removeprefix('t').removesuffix('.txt')
+        ax.set_title(title)
+        return [im]
+
+    anim = FuncAnimation(fig, update, frames=len(files), interval=1000 / fps, blit=False)
+
+    if output_path.lower().endswith(".mp4"):
+        anim.save(output_path, dpi=150)
+    elif output_path.lower().endswith(".gif"):
+        anim.save(output_path, dpi=120, writer="pillow")
+    else:
+        raise ValueError("output_path must end with .mp4 or .gif")
+
+    return anim
+
+
+make_msquared_animation(
+    'dominicfolder-yz',
+    output_path='msquared_animation.mp4',
+    bins=65,
+    field_col=3,
+    fps=10
+)
+print('done!')
+
+# foldername = 'dominicfolder-yz'
+# path = Path(go_to_this_dir(""))
+# for file in sorted(path.iterdir()):
+#     with open('time_max_min.txt','a') as f:
+#         data = np.loadtxt(file)
+#         max = np.max(data[:,3])
+#         min = np.min(data[:,3])
+#         f.write("\n"+file.name+" max: "+str(max)+" min: "+str(min))
